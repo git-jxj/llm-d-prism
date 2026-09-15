@@ -3,7 +3,8 @@ import { X, UploadCloud, CheckCircle, AlertCircle, AlertOctagon, AlertTriangle, 
 import { v4 as uuidv4 } from 'uuid';
 import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Scatter } from 'recharts';
 import { validateBenchmark, validatePrismUploadStructure } from '../../utils/benchmarkValidator';
-import { parseReportV02, stageToEntry, canonicalStringify, mutateRawReportMetadata, compareOriginalStageOrder, normalizeReportUnits } from '../../utils/benchmarkReportV02Parser';
+import { parseReportV02, stageToEntry, mutateRawReportMetadata, compareOriginalStageOrder, normalizeReportUnits } from '../../utils/benchmarkReportV02Parser';
+import { groupStandaloneBRV02Stages } from '../../utils/benchmarkUploadGrouping';
 import { toOptimalDataUri, parseDataUri } from '../../utils/dataParser';
 import yaml from 'js-yaml';
 import { isValidUuid } from '../../utils/shareLinkEncoder';
@@ -1415,60 +1416,23 @@ export default function UploadValidationPage({ onNavigateBack, onNavigate, dashb
         const brv02StandaloneGroups = [];
         for (const item of standaloneReportFiles) {
             if (item.validation.format === 'brv02') {
-                const parsedStage = parseReportV02(item.content, getFilePath(item.file));
-                if (!parsedStage) {
-                    const tempId = uuidv4();
-                    brv02StandaloneGroups.push({
-                        id: tempId,
-                        dirKey: `staged-${tempId}`,
-                        name: '',
-                        files: [item.file],
-                        parsedStages: [{ file: item.file, content: item.content, validation: item.validation }]
-                    });
-                    continue;
-                }
-
-                let targetGroup = null;
-                if (parsedStage.runUid) {
-                    targetGroup = brv02StandaloneGroups.find(g => g.runUid === parsedStage.runUid);
-                }
-                if (!targetGroup) {
-                    const recordMetaStr = canonicalStringify(parsedStage.loadMetadata);
-                    if (recordMetaStr && recordMetaStr !== '') {
-                        targetGroup = brv02StandaloneGroups.find(g => {
-                            const groupMetaStr = canonicalStringify(g.loadMetadata);
-                            return groupMetaStr === recordMetaStr;
-                        });
-                    }
-                }
-
-                if (targetGroup) {
-                    targetGroup.files.push(item.file);
-                    targetGroup.parsedStages.push({ file: item.file, content: item.content, validation: item.validation });
-                } else {
-                    const tempId = uuidv4();
-                    brv02StandaloneGroups.push({
-                        id: tempId,
-                        dirKey: parsedStage.runUid || `staged-${tempId}`,
-                        name: parsedStage.runLabel || '',
-                        runUid: parsedStage.runUid,
-                        loadMetadata: parsedStage.loadMetadata,
-                        files: [item.file],
-                        parsedStages: [{ file: item.file, content: item.content, validation: item.validation }]
-                    });
-                }
-            } else {
-                // inference-perf standalone file
-                const tempId = uuidv4();
-                const baseName = item.file.name.replace(/\.(ya?ml|json)$/i, '');
-                brv02StandaloneGroups.push({
-                    id: tempId,
-                    dirKey: `staged-${tempId}`,
-                    name: baseName,
-                    files: [item.file],
-                    parsedStages: [{ file: item.file, content: item.content, validation: item.validation }]
-                });
+                brv02StandaloneGroups.push(...groupStandaloneBRV02Stages([{
+                    ...item,
+                    parsedStage: parseReportV02(item.content, getFilePath(item.file)),
+                }]));
+                continue;
             }
+
+            // inference-perf standalone file
+            const tempId = uuidv4();
+            const baseName = item.file.name.replace(/\.(ya?ml|json)$/i, '');
+            brv02StandaloneGroups.push({
+                id: tempId,
+                dirKey: `staged-${tempId}`,
+                name: baseName,
+                files: [item.file],
+                parsedStages: [{ file: item.file, content: item.content, validation: item.validation }]
+            });
         }
 
         const groupsToProcess = [];
