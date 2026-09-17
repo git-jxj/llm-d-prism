@@ -160,6 +160,7 @@ export const PrismResultContextSchema = z.object({
     github_user: ContextValueSchema,
     run_id: ContextValueSchema,
     hardware_name: ContextValueSchema,
+    accelerator_count: ContextValueSchema.optional(),
     model_name: ContextValueSchema,
     run_label: ContextValueSchema,
     feedback: ContextValueSchema.optional(),

@@ -199,8 +199,7 @@ export async function listResults(options: ListResultsOptions): Promise<ListResu
                 submitted_at: metadata?.timeCreated || metadata?.updated || null,
                 feedback: feedback || undefined,
                 well_lit_path: well_lit_path || undefined,
-                forked: isForked || undefined,
-                forked_from: isForked ? true : undefined
+                forked: isForked || undefined
             });
         }
 
@@ -348,4 +347,3 @@ export async function deleteResult(runId: string): Promise<void> {
         throw new Error(`Failed to delete result from GCS: ${message}`);
     }
 }
-
