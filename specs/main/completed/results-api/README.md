@@ -139,70 +139,18 @@ lifecycle from local upload to public availability.
 
 ### 6.1 Status Definitions
 
-Submission status is solely determined from GCS object metadata context
-(specifically the `state` metadata key), not which bucket it resides in. The
-location of the benchmark files is instead determined by the deployment
-environment:
+Submission status is determined from the GCS object metadata context
+(`submission_state` key) or browser local storage:
 
-- **`staged`** (Staged):
-    - **Benchmark is locally stored in the browser**, user has not submitted
-      yet.
-    - Useful for previewing benchmarks before submitting.
-    - Useful if user doesn’t even want to upload, they just wanted to locally
-      store it for themselves to view.
-- **`submitted_pending_processing`** (Submitted, Pending Processing):
-    - **Benchmark made it into Prism Cloud** (staging GCS bucket).
-    - Pending automated preliminary processing and filtering.
-        - NOW: includes basic sanity checks:
-            - Are any results zeroed?
-            - Are there too many request failures?
-            - Does it include attributions? Correct formatting (BRV02)?
-        - FUTURE: can include more checks as part of the _validation pipeline_.
-    - Can tack on more metadata or override them on server side.
-        - NOW: necessary for proper attribution enforcement.
-        - FUTURE: necessary for input sanitization in the future.
-- **`submitted_pending_review`** (Submitted, Pending Final Review):
-    - User review queue.
-    - **Visibility:** Only visible to **Admins** (who can view all benchmarks in
-      pending review) and the **submitting user/owner** (who can view their own
-      benchmarks under review).
-    - See
-      [\[External\] llm-d Results Store Submission Policy](https://docs.google.com/document/u/0/d/1EZI-VYXdM9V3KnoWkFIXmihrgO2t7YZZhgeMuIlZDpI/edit?resourcekey=0-xQu9xYrRcroMn5yogcb_xg).
-- **`unlisted`** (Unlisted):
-    - **Benchmark is stored in Prism Cloud backend** (GCS results store).
-    - **Skips human review:** Transitions straight from automated processing to
-      `unlisted` upon upload.
-    - **Not secret, but hidden by default:** Visible to everyone (no manual
-      review required), but hidden by default from general benchmark exploration
-      lists unless explicitly filtered (`status=unlisted`) or accessed via
-      direct share link.
-    - **Data Quality Playground:** Serves as a playground for bad, unverified,
-      or uncertain data. Verified/reviewed data is expected to be public;
-      unlisted data allows sharing unverified runs without cluttering the public
-      store.
-    - **Owner Promotion:** The submitting user (owner) can choose to promote
-      their `unlisted` benchmark to `submitted_pending_review`, placing it into
-      the review queue for public approval. Admins do not manage or promote
-      unlisted benchmarks.
-    - Distinct from `staged`: `staged` is stored locally in the browser
-      (IndexedDB), whereas `unlisted` lives in Prism's cloud storage backend.
-- **`public`** (Public):
-    - All reviews done, benchmark now public in the sea of benchmarks.
-    - **UNCLEAR:** Clean way to show potentially thousands of benchmarks, Manage
-      Benchmarks page **will not scale**.
-- **`promoted`** (Public, Promoted):
-    - If chosen during submission to be one of the well-lit paths, then
-      benchmark results have been included in said well-lit path’s results.
-    - Implies additional visibility from just sea of benchmarks.
-- **`rejected`** (Rejected):
-    - Explicitly rejected by an administrator during human review
-      (`submitted_pending_review` -> `rejected`), with optional rejection reason
-      attached.
-    - Deleted off cloud when purged by admin.
-    - **Note:** Automated validation failures on upload do NOT transition items
-      to `rejected`. Instead, invalid uploads are completely dropped/deleted
-      from cloud storage, returning an HTTP 400 validation error to the
-      submitter without populating the rejected queue.
+| Const Name                     | Human Name         | Stored Location     | Explanation                                                                                         | Possible Next States                                                                 |
+| :----------------------------- | :----------------- | :------------------ | :-------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------- |
+| `staged`                       | Staged (Local)     | Browser (IndexedDB) | Benchmark stored locally in the browser for previewing prior to cloud upload.                       | **Up:** `submitted_pending_processing`<br>**Down:** `[*]` (Discard)                  |
+| `submitted_pending_processing` | Pending Processing | GCS Results Store   | Uploaded benchmark undergoing automated schema validation and sanity checks.                        | **Up:** `unlisted`, `submitted_pending_review`<br>**Down:** `[*]` (Dropped on error) |
+| `submitted_pending_review`     | Pending Review     | GCS Results Store   | Validated benchmark queued for admin review. Visible only to admins and the submitting owner.       | **Up:** `public`, `promoted`<br>**Down:** `unlisted` (Withdraw), `rejected` (Reject) |
+| `unlisted`                     | Unlisted           | GCS Results Store   | Cloud-stored benchmark accessible via direct link or explicit filter, skipping public human review. | **Up:** `submitted_pending_review` (Promote)<br>**Down:** `[*]` (Perma-Delete)       |
+| `public`                       | Public             | GCS Results Store   | Reviewed and approved benchmark visible to all users across general exploration lists.              | **Up:** `promoted`<br>**Down:** `unlisted` (Unlist), `rejected` (Retract)            |
+| `promoted`                     | Public (Promoted)  | GCS Results Store   | Public benchmark highlighted as part of a canonical Well-Lit Path stack configuration.              | **Up:** None<br>**Down:** `public`, `unlisted` (Unlist), `rejected` (Retract)        |
+| `rejected`                     | Rejected           | GCS Results Store   | Benchmark rejected during admin review with optional reviewer feedback attached.                    | **Up:** `submitted_pending_processing` (Resubmit)<br>**Down:** `[*]` (Purge)         |
 
 ### 6.2 State Transitions
 
@@ -213,10 +161,15 @@ stateDiagram-v2
     submitted_pending_processing --> unlisted : Auto-Validation Pass (Target: Unlisted)
     submitted_pending_processing --> submitted_pending_review : Auto-Validation Pass (Target: Public Review)
     submitted_pending_processing --> [*] : Auto-Validation Fail (Dropped)
-    unlisted --> submitted_pending_review : Submitting User (Owner) Promotes to Review
+    unlisted --> submitted_pending_review : Owner Promotes to Review
+    rejected --> submitted_pending_processing : Owner Resubmits for Verification
     submitted_pending_review --> public : Admin Approved
     submitted_pending_review --> rejected : Admin Rejected
     public --> promoted : Selected for Well-Lit Path
+    submitted_pending_review --> unlisted : Owner Withdraws to Unlisted
+    public --> unlisted : Owner Unlists Benchmark
+    unlisted --> [*] : Delete (Owner/Admin)
+    rejected --> [*] : Delete (Owner/Admin)
 ```
 
 - Permissions & Authentication:
@@ -228,11 +181,17 @@ stateDiagram-v2
       accessed via share link. For full design details, see
       [unlisted-benchmarks-spec.md](../../changes/unlisted-benchmarks-spec.md).
     - `unlisted` -> `submitted_pending_review`: Performed exclusively by the
-      **submitting user (owner)** when ready to submit for public review.
+      **submitting user (owner ONLY)** via `POST /api/results/:runId/promote`.
+      Admins cannot promote other users' benchmarks.
     - `submitted_pending_review`: Visible only to **Admins** (all pending runs)
       and the **submitting owner** (their own pending runs).
     - `submitted_pending_review` -> `public` / `rejected`: Requires Admin
-      privileges.
+      privileges via `POST /api/results/:runId/review`.
+    - `submitted_pending_review` / `public` -> `unlisted`: Performed by the
+      **submitting user (owner)** or **admin** via `DELETE /api/results/:runId`
+      (double-delete withdrawal flow).
+    - `unlisted` / `rejected` -> permanent deletion: Performed by the
+      **submitting user (owner)** or **admin** via `DELETE /api/results/:runId`.
 
 ### 6.3 Synchronous vs. Asynchronous Validation
 
@@ -382,8 +341,117 @@ issues), a database migration (e.g., BigQuery or Spanner) is planned.
 
 ---
 
-## 10. API Route Reference
+## 10. API Routes & Endpoint Reference
 
-For a comprehensive list of all backend API endpoints, query parameters,
-authorization policies, and response formats, please refer to the dedicated
-[API Route Reference](routes.md).
+### 10.1 Lifecycle & Directional State Flow Diagrams
+
+#### 1. `POST /api/results/:runId/promote` (Promote Up)
+
+Moves submissions **UP** the lifecycle. Invoked by the **submitting owner ONLY**
+(admins cannot promote other users' benchmarks).
+
+```mermaid
+flowchart LR
+    unlisted -- "POST /promote" --> submitted_pending_review
+    rejected -- "POST /promote (resubmit)" --> submitted_pending_processing
+    submitted_pending_processing -- "POST /promote" --> submitted_pending_review
+```
+
+#### 2. `POST /api/results/:runId/review` (Admin Review)
+
+Handles **review decisions** (approval, promotion, or rejection). Invoked by
+**administrators ONLY**.
+
+```mermaid
+flowchart LR
+    submitted_pending_review -- "POST /review (Approve)" --> public
+    submitted_pending_review -- "POST /review (Reject)" --> rejected
+    public -- "POST /review (Promote)" --> promoted
+    public -- "POST /review (Reject / Retract)" --> rejected
+```
+
+#### 3. `DELETE /api/results/:runId` (Demote Down & Permanent Deletion)
+
+Moves submissions **DOWN** (withdrawal/unlisting back to `unlisted`) or
+**permanently purges** data off GCS (`unlisted` / `rejected`).
+
+- **Owner:** Can withdraw, unlist, or delete **their own** submissions.
+- **Admin:** Can withdraw, unlist, or delete **any** submission.
+
+```mermaid
+flowchart LR
+    submitted_pending_review -- "DELETE (Withdraw: Owner [own] or Admin [any])" --> unlisted
+    public -- "DELETE (Unlist: Owner [own] or Admin [any])" --> unlisted
+    unlisted -- "DELETE (Perma-Delete: Owner [own] or Admin [any])" --> GCS_DELETED["Deleted off Cloud Storage"]
+    rejected -- "DELETE (Purge: Owner [own] or Admin [any])" --> GCS_DELETED
+```
+
+### 10.2 Endpoint Catalog
+
+#### Authentication & Session
+
+- **`GET /api/auth/github/login`** - Begin GitHub OAuth login
+    - Redirects client browser to GitHub OAuth authorization.
+- **`GET /api/auth/github/callback`** - OAuth callback handler
+    - Exchanges authorization code for access and refresh tokens.
+    - Redirects back to client frontend with tokens in URL hash fragment.
+- **`GET /api/auth/github/me`** - Session resolution
+    - Resolves active session state, username, permission tier (`admin`, `user`,
+      or `none`), and avatar URL.
+- **`POST /api/auth/github/refresh`** - Token refresh
+    - Exchanges a valid refresh token for fresh access and refresh tokens.
+- **`POST /api/auth/github/logout`** - Session cleanup
+    - Clears active client session credentials.
+
+#### Benchmark Results & Lifecycle
+
+- **`GET /api/results`** - List benchmarks
+    - Accepts optional session token for authenticated user queries.
+    - Allows listing own benchmarks using `?own=true`.
+    - Allows filtering by submission state using `?status=<state>`.
+    - Supports pagination via `?limit=<n>` and `?pageToken=<token>`.
+    - Admins can query all statuses; contributors/guests view public, unlisted,
+      and their own submissions.
+- **`POST /api/results`** - Submit benchmark result bundle
+    - Requires authenticated contributor/admin session.
+    - Accepts benchmark run upload payload matching BRV0.2 schema.
+    - Supports target visibility selection (`unlisted` or
+      `submitted_pending_review`).
+    - Performs synchronous server-side format verification, metric integrity
+      validation, and ID generation.
+- **`GET /api/results/:runId`** - Retrieve single benchmark bundle
+    - Retrieves complete benchmark JSON payload by UUID.
+    - Public and unlisted benchmarks are readable by anyone with the link/UUID;
+      private/in-review/rejected runs require owner or admin permissions.
+- **`POST /api/results/:runId/promote`** - Promote benchmark (upward lifecycle)
+    - Submitting owner ONLY (admins cannot promote other users' benchmarks).
+    - Promotes `unlisted` $\rightarrow$ `submitted_pending_review` or resubmits
+      `rejected` $\rightarrow$ `submitted_pending_processing`.
+- **`POST /api/results/:runId/review`** - Review benchmark (admin decisions)
+    - Admins ONLY.
+    - Transitions submissions to `public`, `promoted`, `rejected`, or
+      `changes_requested`, recording reviewer identity and feedback in audit
+      history.
+- **`DELETE /api/results/:runId`** - Withdraw, unlist, or delete benchmark
+    - Submitting owner (own submissions) or admin (any submission).
+    - Double-delete flow: withdraws/unlists `submitted_pending_review` or
+      `public` runs to `unlisted`; permanently deletes `unlisted` or `rejected`
+      runs from GCS.
+- **`GET /api/results/:runId/export`** &
+  **`GET /api/results/:runId/entries/:entryIndex/download`** - Export results
+    - Exports bundled results as a ZIP archive or downloads individual raw stage
+      reports.
+
+#### Proxy & Configuration
+
+- **`GET /api/config`** - Server configuration
+    - Retrieves shared runtime environment parameters.
+- **`GET /api/regressions`** - Regression reports
+    - Retrieves parsed regression reports with 5-minute memory caching.
+- **`ALL /api/giq/*`** - GKE Recommender (GIQ) proxy
+    - Proxies requests to GIQ API with server ADC credentials.
+- **`ALL /api/gcs/*`** - Google Cloud Storage proxy
+    - Proxies private GCS storage requests using server ADC credentials.
+- **`GET /api/local/list`** & **`GET /api/local/file/*`** - Local development
+  staging
+    - Development mode utilities for local filesystem benchmark fixtures.

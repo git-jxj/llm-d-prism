@@ -48,7 +48,7 @@ graph TD
 
 This architecture is documented in:
 - [Prism Identity & Access Management (IAM)](../main/completed/results-api/iam.md)
-- [Prism Cloud API Route Reference](../main/completed/results-api/routes.md)
+- [Prism Cloud API Route Reference](../main/completed/results-api/README.md#10-api-routes--endpoint-reference)
 - [Prism Results Store Specification](../main/completed/results-api/README.md)
 - [Unlisted Benchmarks Specification](unlisted-benchmarks-spec.md)
 

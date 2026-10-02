@@ -2464,11 +2464,13 @@ export const useDashboardData = (initialState, dashboardState) => {
                 headers['X-Prism-Github-Token'] = accessToken;
             }
 
-            const reqBody = status === 'submitted_pending_review' 
+            const isPromote = status === 'submitted_pending_review' || status === 'submitted_pending_processing';
+            const endpoint = isPromote ? `/api/results/${runId}/promote` : `/api/results/${runId}/review`;
+            const reqBody = isPromote
                 ? { status }
                 : { status, feedback, reviewer };
 
-            const res = await fetch(`/api/results/${runId}/status`, {
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(reqBody)
@@ -2483,7 +2485,11 @@ export const useDashboardData = (initialState, dashboardState) => {
                         status === 'public' ? 'published' : status;
                     addToast(`Run has been ${friendlyStatus} successfully.`, 'success');
                 }
+                await CacheManager.clearAll();
                 await loadSubmissions();
+                if (loadAllData) {
+                    await loadAllData(null, true);
+                }
             }
         } catch (err) {
             console.error('[Status Update Error]', err);
@@ -2493,7 +2499,7 @@ export const useDashboardData = (initialState, dashboardState) => {
         } finally {
             setIsLoadingSubmissions(false);
         }
-    }, [loadSubmissions, addToast, user, accessToken]);
+    }, [loadSubmissions, loadAllData, addToast, user, accessToken]);
 
     const bulkUpdateSubmissionStatus = useCallback(async (runIds, status, feedback = '') => {
         if (!runIds || runIds.length === 0) return;
@@ -2507,16 +2513,19 @@ export const useDashboardData = (initialState, dashboardState) => {
                 headers['X-Prism-Github-Token'] = accessToken;
             }
 
+            const isPromote = status === 'submitted_pending_review' || status === 'submitted_pending_processing';
+
             // Perform all updates concurrently
             const promises = runIds.map(async (runId) => {
-                const res = await fetch(`/api/results/${runId}/status`, {
+                const endpoint = isPromote ? `/api/results/${runId}/promote` : `/api/results/${runId}/review`;
+                const reqBody = isPromote
+                    ? { status }
+                    : { status, feedback, reviewer };
+
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({
-                        status,
-                        feedback,
-                        reviewer
-                    })
+                    body: JSON.stringify(reqBody)
                 });
                 if (!res.ok) {
                     throw new Error(`Failed to update status for run ${runId}: HTTP ${res.status}`);
@@ -2534,7 +2543,11 @@ export const useDashboardData = (initialState, dashboardState) => {
                 addToast(`Successfully updated ${runIds.length} runs to ${friendlyStatus}.`, 'success');
             }
             
+            await CacheManager.clearAll();
             await loadSubmissions();
+            if (loadAllData) {
+                await loadAllData(null, true);
+            }
         } catch (err) {
             console.error('[Bulk Status Update Error]', err);
             if (addToast) {
@@ -2543,7 +2556,7 @@ export const useDashboardData = (initialState, dashboardState) => {
         } finally {
             setIsLoadingSubmissions(false);
         }
-    }, [loadSubmissions, addToast, user, accessToken]);
+    }, [loadSubmissions, loadAllData, addToast, user, accessToken]);
 
     const deleteSubmission = useCallback(async (runId, shouldReload = true) => {
         setIsLoadingSubmissions(true);

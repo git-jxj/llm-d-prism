@@ -44,6 +44,8 @@ const getStatusTooltipText = (status, sub) => {
     switch (status) {
         case 'staged':
             return "Staged locally on your machine. Not yet submitted to the Results Store.";
+        case 'unlisted':
+            return "Saved in the Results Store as unlisted. Accessible via direct link or when 'Show Unlisted' is enabled.";
         case 'submitted_pending_processing':
         case 'processing':
             return "Staged in the GCS bucket. Automated formatting checks are running.";
@@ -1638,7 +1640,7 @@ export const UnifiedDataTable = (props) => {
         }
     };
 
-    const onlyRejectedSelected = React.useMemo(() => {
+    const canDeleteRejectedSelected = React.useMemo(() => {
         if (selectedBenchmarks.size === 0) return false;
         return Array.from(selectedBenchmarks).every(key => {
             const stat = modelStats.find(s => s.benchmarkKey === key);
@@ -1648,9 +1650,14 @@ export const UnifiedDataTable = (props) => {
             const runId = src.startsWith('brv02:') ? src.replace('brv02:', '') : firstEntry.run_id;
             const sub = submissionsMap ? submissionsMap[runId] : null;
             const status = sub?.status || firstEntry.source_info?.submission_state || 'staged';
-            return status === 'rejected';
+            if (status !== 'rejected') return false;
+
+            if (isAdmin) return true;
+            const authorUsername = sub?.github_author?.username || firstEntry?.github_author?.username || firstEntry?.source_info?.github_user;
+            const isOwner = !!(user?.username && authorUsername && authorUsername.toLowerCase() === user.username.toLowerCase());
+            return isOwner;
         });
-    }, [selectedBenchmarks, modelStats, submissionsMap]);
+    }, [selectedBenchmarks, modelStats, submissionsMap, isAdmin, user]);
 
     const handleBulkDeleteRejected = async () => {
         if (selectedBenchmarks.size === 0) return;
@@ -1974,7 +1981,7 @@ export const UnifiedDataTable = (props) => {
                             </>
                         )}
 
-                        {isAdmin && onlyRejectedSelected && (
+                        {canDeleteRejectedSelected && (
                             <Button
                                 variant="danger"
                                 size="sm"
@@ -2943,8 +2950,6 @@ export const UnifiedDataTable = (props) => {
                 </div>,
                 document.body
             )}
-
-
         </div>
     );
 };
@@ -3068,6 +3073,10 @@ const BenchmarkRow = React.memo(({
         if (!isBrv02 || readOnly) return null;
         const sub = submissionsMap ? submissionsMap[runId] : null;
         const status = sub?.status || benchmarkData[0]?.source_info?.submission_state || 'staged';
+        const authorUsername = sub?.github_author?.username || benchmarkData[0]?.github_author?.username || benchmarkData[0]?.source_info?.github_user;
+        const isOwner = !!(user?.username && authorUsername && authorUsername.toLowerCase() === user.username.toLowerCase());
+        const canOwnerPromote = isOwner || isPlaygroundMode;
+        const canWithdrawOrDelete = isOwner || isAdmin || isPlaygroundMode;
         
         if (canResubmit && status === 'staged') {
             return user?.permission === 'none' ? (
@@ -3097,10 +3106,8 @@ const BenchmarkRow = React.memo(({
             );
         }
         if (status === 'unlisted') {
-            const authorUsername = sub?.github_author?.username || benchmarkData[0]?.github_author?.username || benchmarkData[0]?.source_info?.github_user;
-            const isOwner = !!(user?.username && authorUsername && authorUsername.toLowerCase() === user.username.toLowerCase());
-            const canPromote = isOwner;
-            const canDelete = isOwner || isAdmin;
+            const canPromote = canOwnerPromote;
+            const canDelete = canWithdrawOrDelete;
 
             if (!canPromote && !canDelete) return null;
 
@@ -3145,61 +3152,110 @@ const BenchmarkRow = React.memo(({
                 </div>
             );
         }
-        if (canResubmit && status === 'submitted_pending_processing') {
+        if (status === 'submitted_pending_review' || status === 'in_review' || status === 'submitted_pending_processing') {
+            const showAdminApproveReject = isAdmin && (status === 'submitted_pending_review' || status === 'in_review');
+            const showPromoteToReview = canOwnerPromote && status === 'submitted_pending_processing';
+            const showWithdraw = canWithdrawOrDelete && (status === 'submitted_pending_review' || status === 'in_review');
+
+            if (!showAdminApproveReject && !showPromoteToReview && !showWithdraw) return null;
+
+            return (
+                <div className="flex items-center gap-1.5">
+                    {showPromoteToReview && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleActionClick(async () => {
+                                    if (updateSubmissionStatus) {
+                                        await updateSubmissionStatus(runId, 'submitted_pending_review', '', stat.model, stat.hardware);
+                                    }
+                                });
+                            }}
+                            disabled={isLoadingSubmissions || isLocalActionPending}
+                            title="Promote benchmark to the admin review queue"
+                            className="px-2.5 py-1 rounded-xl border border-purple-500/20 bg-purple-500/5 hover:bg-purple-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-purple-400 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
+                        >
+                            <Play className="w-2.5 h-2.5 fill-current" /> Promote to Review
+                        </button>
+                    )}
+                    {showAdminApproveReject && (
+                        <>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleActionClick(async () => {
+                                        if (updateSubmissionStatus) {
+                                            await updateSubmissionStatus(runId, 'public', '', stat.model, stat.hardware);
+                                        }
+                                    });
+                                }}
+                                disabled={isLoadingSubmissions || isLocalActionPending}
+                                title="Approve this run and publish it to the global Results store"
+                                className="px-2.5 py-1 rounded-xl border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-400 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
+                            >
+                                <Check className="w-2.5 h-2.5 stroke-[3]" /> Approve
+                            </button>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRejectingRunId(runId);
+                                    setRejectionFeedback('');
+                                }}
+                                disabled={isLoadingSubmissions || isLocalActionPending}
+                                title="Reject compliance or request changes with custom feedback"
+                                className="px-2.5 py-1 rounded-xl border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-red-400 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
+                            >
+                                <X className="w-2.5 h-2.5" /> Reject
+                            </button>
+                        </>
+                    )}
+                    {showWithdraw && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleActionClick(async () => {
+                                    if (window.confirm(`Are you sure you want to withdraw benchmark ${runId} back to unlisted?`)) {
+                                        if (deleteSubmission) {
+                                            await deleteSubmission(runId);
+                                        }
+                                    }
+                                });
+                            }}
+                            disabled={isLoadingSubmissions || isLocalActionPending}
+                            title="Withdraw this benchmark back to unlisted state"
+                            className="px-2.5 py-1 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed text-amber-400 text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
+                        >
+                            <Trash2 className="w-2.5 h-2.5" /> Withdraw
+                        </button>
+                    )}
+                </div>
+            );
+        }
+        if (status === 'public' || status === 'promoted') {
+            if (!canWithdrawOrDelete) return null;
             return (
                 <button
                     onClick={(e) => {
                         e.stopPropagation();
                         handleActionClick(async () => {
-                            if (updateSubmissionStatus) {
-                                await updateSubmissionStatus(runId, 'submitted_pending_review', '', stat.model, stat.hardware);
+                            if (window.confirm(`Are you sure you want to pull public benchmark ${runId} back to unlisted?`)) {
+                                if (deleteSubmission) {
+                                    await deleteSubmission(runId);
+                                }
                             }
                         });
                     }}
                     disabled={isLoadingSubmissions || isLocalActionPending}
-                    title="Promote benchmark to the admin review queue"
-                    className="px-2.5 py-1 rounded-xl border border-purple-500/20 bg-purple-500/5 hover:bg-purple-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-purple-400 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
+                    title="Pull this public benchmark back to unlisted state"
+                    className="px-2.5 py-1 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed text-amber-400 text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
                 >
-                    <Play className="w-2.5 h-2.5 fill-current" /> Promote to Review
+                    <Trash2 className="w-2.5 h-2.5" /> Unlist
                 </button>
             );
         }
-        if (isAdmin && (status === 'submitted_pending_review' || status === 'in_review')) {
-            return (
-                <>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            handleActionClick(async () => {
-                                if (updateSubmissionStatus) {
-                                    await updateSubmissionStatus(runId, 'public', '', stat.model, stat.hardware);
-                                }
-                            });
-                        }}
-                        disabled={isLoadingSubmissions || isLocalActionPending}
-                        title="Approve this run and publish it to the global Results store"
-                        className="px-2.5 py-1 rounded-xl border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-455 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
-                    >
-                        <Check className="w-2.5 h-2.5 stroke-[3]" /> Approve
-                    </button>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setRejectingRunId(runId);
-                            setRejectionFeedback('');
-                        }}
-                        disabled={isLoadingSubmissions || isLocalActionPending}
-                        title="Reject compliance or request changes with custom feedback"
-                        className="px-2.5 py-1 rounded-xl border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed text-red-400 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer select-none flex items-center gap-1 whitespace-nowrap"
-                    >
-                        <X className="w-2.5 h-2.5" /> Reject
-                    </button>
-                </>
-            );
-        }
         if (status === 'rejected' || status === 'changes_requested') {
-            const showResubmit = canResubmit;
-            const showDelete = isAdmin && status === 'rejected';
+            const showResubmit = canOwnerPromote;
+            const showDelete = canWithdrawOrDelete && status === 'rejected';
 
             if (!showResubmit && !showDelete) return null;
 
@@ -3731,7 +3787,9 @@ const BenchmarkRow = React.memo(({
                                                                                     const status = sub?.status || benchmarkData[0]?.source_info?.submission_state || 'staged';
                                                                                     let chipStatus = 'staged';
                                                                                     let chipLabel = undefined;
-                                                                                    if (status === 'submitted_pending_processing') {
+                                                                                    if (status === 'unlisted') {
+                                                                                        chipStatus = 'unlisted';
+                                                                                    } else if (status === 'submitted_pending_processing') {
                                                                                         chipStatus = 'processing';
                                                                                     } else if (status === 'submitted_pending_review' || status === 'in_review') {
                                                                                         chipStatus = 'in_review';

@@ -60,7 +60,6 @@ resolves this gap.
 
 For related details, see the canonical
 [Prism Results Store Specification](../main/completed/results-api/README.md),
-[API Route Reference](../main/completed/results-api/routes.md),
 [Frontend Architecture Spec](../main/completed/results-api/frontend.md), and
 [Identity & Access Management Spec](../main/completed/results-api/iam.md).
 

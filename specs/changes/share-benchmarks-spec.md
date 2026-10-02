@@ -34,7 +34,6 @@ Providing a share button on the selection toolbar with compact binary Base64 UUI
 For related context, see:
 - [Prism Results Store Specification](../main/completed/results-api/README.md)
 - [Frontend Architecture Specification](../main/completed/results-api/frontend.md)
-- [API Route Reference](../main/completed/results-api/routes.md)
 - [Unlisted Benchmarks Specification](unlisted-benchmarks-spec.md)
 
 ---

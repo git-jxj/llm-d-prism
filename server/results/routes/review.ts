@@ -16,7 +16,6 @@ import { Request, Response } from 'express';
 import { validateGitHubToken } from '../../oauth.ts';
 import { isPlaygroundMode } from '../../iam.ts';
 import { readResultPayload, writeResult, readResultMetadata } from '../gcs.ts';
-import { processSubmission } from '../processing.ts';
 import { PrismSubmissionState } from '../api.ts';
 
 export interface ReviewResultsRequest {
@@ -33,17 +32,15 @@ export interface ReviewResultsResponse {
 }
 
 /**
- * POST /api/results/:runId/status
+ * POST /api/results/:runId/review
  *
- * Updates/reviews the status of a result store submission.
+ * Reviews (approves or rejects) a result store benchmark submission.
  *
  * - **Headers:** `X-Prism-Github-Token: <access_token>` (required, optional in playground mode)
  * - **Authorization Rules:**
- *     - **Playground Mode:** Full access for all operations anonymously.
- *     - **Admin:** Full access. Can approve (`public` / `promoted`), reject (`rejected`), or reset state.
- *     - **Owner of submission:** Can only submit/resubmit, i.e., set state to `submitted_pending_processing` or `submitted_pending_review`.
- *       Any attempt to set state to `public` or `rejected` returns `403 Forbidden`.
- *     - **Other users:** `403 Forbidden`.
+ *     - **Playground Mode:** Full access for all review operations anonymously.
+ *     - **Admin:** Can approve (`public` / `promoted`) or reject (`rejected` / `changes_requested`).
+ *     - **Non-Admin Users / Guests:** `403 Forbidden`.
  */
 export async function reviewResultsHandler(
     req: Request<{ runId: string }, ReviewResultsResponse | { error: string; details?: unknown }, ReviewResultsRequest>,
@@ -87,66 +84,41 @@ export async function reviewResultsHandler(
         }
     }
 
+    if (permission !== 'admin') {
+        return res.status(403).json({ error: 'Access denied. Admin privileges required for benchmark reviews.' });
+    }
+
     const { status, feedback, reviewer } = req.body;
     if (!status) {
         return res.status(400).json({ error: 'Missing status in request body.' });
     }
 
+    // Validate review status target
+    const validReviewStatuses: PrismSubmissionState[] = ['public', 'promoted', 'rejected', 'changes_requested'];
+    if (!validReviewStatuses.includes(status)) {
+        return res.status(400).json({
+            error: `Invalid review status '${status}'. Review endpoint only supports 'public', 'promoted', 'rejected', or 'changes_requested'. Use /promote for owner submission promotions.`
+        });
+    }
+
     try {
-        // 2. Fetch GCS metadata context first to enforce authorization check
+        // 2. Fetch GCS metadata context first to ensure benchmark exists
         const metadata = await readResultMetadata(runId);
         if (!metadata) {
             return res.status(404).json({ error: 'Result not found' });
         }
 
-        const { user: itemUser, state: currentState } = metadata;
+        const { user: itemUser } = metadata;
 
-        // 3. Permission and authorization checks
-        if (!isPlaygroundMode()) {
-            if (currentState === 'unlisted') {
-                if (status !== 'submitted_pending_review') {
-                    return res.status(403).json({ error: 'Forbidden. Unlisted benchmarks can only be promoted to submitted_pending_review.' });
-                }
-                const isOwner = username && itemUser.toLowerCase() === username.toLowerCase();
-                if (!isOwner) {
-                    return res.status(403).json({ error: 'Forbidden. Only the owner of an unlisted benchmark can promote it.' });
-                }
-                if (feedback !== undefined || reviewer !== undefined) {
-                    return res.status(400).json({ error: 'Feedback and reviewer fields are forbidden when promoting from unlisted to submitted_pending_review.' });
-                }
-            } else {
-                let allowed = false;
-                if (permission === 'admin') {
-                    allowed = true;
-                } else {
-                    // Check if the current user is the owner/author of the submission
-                    if (username && itemUser.toLowerCase() === username.toLowerCase()) {
-                        // Owners can only transition their own runs to 'submitted_pending_processing' or 'submitted_pending_review' (resubmission/promotion)
-                        if (status === 'submitted_pending_processing' || status === 'submitted_pending_review') {
-                            allowed = true;
-                        } else {
-                            return res.status(403).json({ error: 'Forbidden. Non-admin users cannot approve, reject, or promote benchmarks of other status values.' });
-                        }
-                    }
-                }
-
-                if (!allowed) {
-                    return res.status(403).json({ error: 'Access denied. You do not have permissions to modify this result.' });
-                }
-            }
-        }
-
-        // 4. Fetch actual file content from GCS to edit the fields
+        // 3. Fetch actual file content from GCS to edit the review fields
         const payload = await readResultPayload(runId);
 
         // Update feedback
         payload.feedback = feedback || null;
 
-        // Initialize review metadata if not present (mirroring old /api/local/status)
+        // Initialize review metadata
         if (!payload.review) {
-            payload.review = {
-                history: []
-            };
+            payload.review = { history: [] };
         }
         const reviewBy = reviewer || username;
         payload.review.reviewer = reviewBy;
@@ -161,36 +133,19 @@ export async function reviewResultsHandler(
             by: reviewBy
         });
 
-        // 5. Save the updated payload and state back to GCS
+        // 4. Save the updated payload and state back to GCS
         await writeResult(runId, payload, status, itemUser);
 
-        // 6. If the requested status is 'submitted_pending_processing', run the validation processing synchronously
-        if (status === 'submitted_pending_processing') {
-            const processingResult = await processSubmission(runId);
-            if (!processingResult.success) {
-                return res.status(400).json({
-                    error: 'Validation failed during resubmission. Submission dropped.',
-                    details: processingResult.errors
-                });
-            }
-            return res.json({
-                success: true,
-                state: processingResult.state,
-                message: `Benchmark successfully resubmitted and promoted to review.`,
-                updatedData: payload
-            });
-        }
-
-        res.json({
+        return res.json({
             success: true,
             state: status,
             message: `Benchmark submission status successfully updated to ${status}.`,
             updatedData: payload
         });
-
     } catch (error: unknown) {
         console.error('[Results Review API Error]', error);
         const msg = error instanceof Error ? error.message : String(error);
-        res.status(500).json({ error: 'Failed to update result submission status', details: msg });
+        return res.status(500).json({ error: 'Failed to update result submission status', details: msg });
     }
 }
+

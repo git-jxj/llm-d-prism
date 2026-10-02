@@ -99,8 +99,7 @@ A collapsible, multi-column panel that updates dynamically based on indexed data
 Prism exposes a set of endpoints for benchmark ingestion, validation, and retrieval. The implementation is split between the Express backend and GCS storage.
 
 For detailed specifications, refer to the following documents:
-- **[API Schema & Ingestion Reference](completed/results-api/README.md):** Defines the data contract, validation rules, and GCS metadata usage.
-- **[API Route Reference](completed/results-api/routes.md):** Complete catalog of authentication, results, and configuration endpoints.
+- **[API Schema, Routes & Ingestion Reference](completed/results-api/README.md):** Defines the data contract, API route catalog, validation rules, and GCS metadata usage.
 - **[Identity & Access Management (IAM)](completed/results-api/iam.md):** Details on GitHub OAuth integration, role resolution, and GCS allowlist management.
 - **[GitHub App Configuration Guide](../../docs/github-oauth-setup.md):** Setup instructions for the GitHub App.
 
@@ -124,9 +123,8 @@ The application is located at the repository root.
 │   │   ├── roadmap.md      # Feature Roadmap
 │   │   └── completed/      # Completed Specifications
 │   │       ├── results-api/ # Prism Cloud API Specs
-│   │       │   ├── README.md # API Schema & Reference
-│   │       │   ├── iam.md    # Identity & Access Management
-│   │       │   └── routes.md # Route Reference
+│   │       │   ├── README.md # API Schema & Route Reference
+│   │       │   └── iam.md    # Identity & Access Management
 │   │       └── ...
 │   ├── changes/            # Active Proposals & WIP Specs
 │   └── archive/            # Abandoned/Rejected Specs

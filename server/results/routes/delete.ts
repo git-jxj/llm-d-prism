@@ -15,7 +15,7 @@
 import { Request, Response } from 'express';
 import { validateGitHubToken } from '../../oauth.ts';
 import { isPlaygroundMode } from '../../iam.ts';
-import { readResultMetadata, deleteResult } from '../gcs.ts';
+import { readResultMetadata, readResultPayload, writeResult, deleteResult } from '../gcs.ts';
 
 export interface DeleteResultsResponse {
     success: boolean;
@@ -25,14 +25,16 @@ export interface DeleteResultsResponse {
 /**
  * DELETE /api/results/:runId
  *
- * Permanently deletes a benchmark result run bundle from the GCS Results Store.
+ * Deletes or withdraws a benchmark result run bundle from the GCS Results Store.
  *
  * - **Headers:** `X-Prism-Github-Token: <access_token>` (required, optional in playground mode)
  * - **Authorization Rules:**
- *     - **Playground Mode:** Full access to delete any benchmark in RESULTS_STORE_BUCKET anonymously.
- *     - **Admin:** Full access, provided benchmark submission state is `unlisted` or `rejected`.
- *     - **Owner:** Full access if benchmark submission state is `unlisted`.
- *     - **Non-Admin Users / Guests:** `403 Forbidden`.
+ *     - **Playground Mode:** Full access to delete or withdraw any benchmark in RESULTS_STORE_BUCKET anonymously.
+ *     - **Submitting User (Owner) / Admin:**
+ *         - State `unlisted` or `rejected`: Permanently deletes the benchmark bundle off GCS.
+ *         - State `submitted_pending_review`, `in_review`, `submitted_pending_processing`, `public`, or `promoted`:
+ *           Demotes/withdraws the benchmark back to `unlisted` state (double-delete flow).
+ *     - **Other users:** `403 Forbidden`.
  * - **Benchmark Checks:**
  *     - `runId` must be a valid UUID.
  *     - Benchmark must exist in the GCS Results Store.
@@ -88,32 +90,55 @@ export async function deleteResultsHandler(
 
         const { user: itemUser, state: itemState } = metadata;
         const isOwner = !!(username && itemUser.toLowerCase() === username.toLowerCase());
+        const isAdmin = permission === 'admin' || isPlaygroundMode();
 
-        let allowed = false;
-        if (isPlaygroundMode()) {
-            allowed = true;
-        } else if (isOwner && itemState === 'unlisted') {
-            allowed = true;
-        } else if (permission === 'admin' && (itemState === 'unlisted' || itemState === 'rejected')) {
-            allowed = true;
-        }
-
-        if (!allowed) {
+        if (!isOwner && !isAdmin) {
             return res.status(403).json({
-                error: 'Forbidden. Benchmark can only be deleted if it is unlisted (by owner or admin) or rejected (by admin).'
+                error: 'Forbidden. You do not have permission to delete or withdraw this benchmark.'
             });
         }
 
-        // 3. Delete object from GCS Results Store
-        await deleteResult(runId);
+        // 3. Process action based on current submission state
+        if (itemState === 'unlisted' || itemState === 'rejected') {
+            // Permanently delete object from GCS Results Store
+            await deleteResult(runId);
 
-        return res.json({
-            success: true,
-            message: `Benchmark ${runId} successfully deleted.`
-        });
+            return res.json({
+                success: true,
+                message: `Benchmark ${runId} successfully deleted.`
+            });
+        } else {
+            // Demote / withdraw benchmark to 'unlisted' state
+            const payload = await readResultPayload(runId);
+
+            if (!payload.review) {
+                payload.review = { history: [] };
+            }
+            if (!payload.review.history) {
+                payload.review.history = [];
+            }
+            payload.review.history.push({
+                status: 'unlisted',
+                changedAt: new Date().toISOString(),
+                by: username || 'anonymous'
+            });
+
+            await writeResult(runId, payload, 'unlisted', itemUser);
+
+            const isPublicState = itemState === 'public' || itemState === 'promoted';
+            const message = isPublicState
+                ? `Public benchmark ${runId} successfully pulled back to unlisted.`
+                : `Benchmark ${runId} successfully withdrawn to unlisted.`;
+
+            return res.json({
+                success: true,
+                message
+            });
+        }
     } catch (error: unknown) {
         console.error('[Results Delete API Error]', error);
         const msg = error instanceof Error ? error.message : String(error);
-        return res.status(500).json({ error: 'Failed to delete benchmark result', details: msg });
+        return res.status(500).json({ error: 'Failed to process benchmark deletion', details: msg });
     }
 }
+

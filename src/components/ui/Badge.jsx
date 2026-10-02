@@ -58,6 +58,7 @@ export function Badge({ tone = 'neutral', size = 'sm', className, children, ...p
 // kebab-case spellings seen in Results Store data.
 const STATUS_MAP = {
     staged: { tone: 'neutral', label: 'Staged' },
+    unlisted: { tone: 'info', label: 'Unlisted' },
     draft: { tone: 'neutral', label: 'Draft' },
     processing: { tone: 'info', label: 'Processing' },
     in_review: { tone: 'warning', label: 'In Review' },

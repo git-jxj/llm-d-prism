@@ -526,32 +526,6 @@ app.get('/api/pd-disaggregation/data', async (req, res) => {
     }
 });
 
-app.post('/api/local/submit', async (req, res) => {
-    const fs = await import('fs');
-    const payload = req.body;
-    if (!payload.runId) {
-        return res.status(400).json({ error: 'Missing runId' });
-    }
-    
-    const baseDir = LOCAL_DIR;
-    const runDir = path.join(baseDir, payload.runId);
-    
-    try {
-        if (!fs.existsSync(runDir)) {
-            fs.mkdirSync(runDir, { recursive: true });
-        }
-        
-        const filepath = path.join(runDir, 'prism_run_upload.json');
-        fs.writeFileSync(filepath, JSON.stringify(payload, null, 2), 'utf8');
-        console.log(`[Local API] Saved submission for run ${payload.runId} to ${filepath}`);
-        res.json({ success: true, path: filepath });
-    } catch (e) {
-        console.error("Failed to save submission:", e);
-        res.status(500).json({ error: 'Failed to write submission file', details: e.message });
-    }
-});
-
-
 function parseGcsPath(pathStr) {
     const cleanPath = pathStr.replace(/^\//, '');
 
@@ -1135,83 +1109,6 @@ app.get('/api/regressions', async (req, res) => {
     } catch (err) {
         console.error('[Regressions API Error]', err);
         res.status(500).json({ error: 'Failed to fetch regressions', details: err.message });
-    }
-});
-
-// --- GitHub OAuth Integration ---
-app.get('/api/auth/github', (req, res) => {
-    const clientId = process.env.GITHUB_CLIENT_ID;
-    if (!clientId) {
-        console.log('[Auth] GITHUB_CLIENT_ID not configured. Redirecting to mock login.');
-        const mockRedirect = `/api/auth/github/callback?code=mock_code_developer`;
-        return res.redirect(mockRedirect);
-    }
-    
-    const redirectUri = `${req.protocol}://${req.get('host')}/api/auth/github/callback`;
-    const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=user:email&redirect_uri=${encodeURIComponent(redirectUri)}`;
-    res.redirect(githubAuthUrl);
-});
-
-app.get('/api/auth/github/callback', async (req, res) => {
-    const { code } = req.query;
-    if (!code) {
-        return res.redirect('/?view=results-store&auth_error=missing_code');
-    }
-
-    try {
-        let username = 'mock-developer';
-        let fullName = 'Mock Developer';
-        let email = 'developer@mock.github.com';
-
-        const clientId = process.env.GITHUB_CLIENT_ID;
-        const clientSecret = process.env.GITHUB_CLIENT_SECRET;
-
-        if (clientId && code !== 'mock_code_developer') {
-            const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
-                body: JSON.stringify({
-                    client_id: clientId,
-                    client_secret: clientSecret,
-                    code
-                })
-            });
-            const tokenData = await tokenRes.json();
-            if (!tokenData.access_token) {
-                throw new Error('Failed to exchange authorization code for token');
-            }
-
-            const accessToken = tokenData.access_token;
-
-            const userRes = await fetch('https://api.github.com/user', {
-                headers: {
-                    'Authorization': `token ${accessToken}`,
-                    'User-Agent': 'LLM-d-Prism'
-                }
-            });
-            const userData = await userRes.json();
-            username = userData.login || 'unknown';
-            fullName = userData.name || username;
-
-            const emailsRes = await fetch('https://api.github.com/user/emails', {
-                headers: {
-                    'Authorization': `token ${accessToken}`,
-                    'User-Agent': 'LLM-d-Prism'
-                }
-            });
-            const emailsData = await emailsRes.json();
-            const primaryEmailObj = Array.isArray(emailsData) ? emailsData.find(e => e.primary) : null;
-            email = primaryEmailObj ? primaryEmailObj.email : (userData.email || 'no-email@github.com');
-        }
-
-        res.redirect(`/?view=results-store&github_user=${encodeURIComponent(username)}&github_name=${encodeURIComponent(fullName)}&github_email=${encodeURIComponent(email)}&auth_success=true`);
-
-    } catch (err) {
-        console.error('[Auth Callback Error]', err);
-        res.redirect('/?view=results-store&auth_error=' + encodeURIComponent(err.message));
     }
 });
 
